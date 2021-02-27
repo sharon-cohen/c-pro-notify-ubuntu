@@ -1,5 +1,3 @@
-
-
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
@@ -11,63 +9,37 @@
 #include <fcntl.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/wait.h>
 #include <pthread.h>
-
+#include <dirent.h>
+#include <errno.h>
 #include <signal.h>
 #include <strings.h>
 #include <stdlib.h>
 #include <semaphore.h>
 #include <execinfo.h>
 
-#define PORT 5000		//Netcat server port
+#define PORT 10000		//Netcat server port
 #define BT_BUF_SIZE 1024
-#define TELNET_PORT 12345	//Telnet listening port
-
-
-
-/*
-void  __attribute__ ((no_instrument_function))  __cyg_profile_func_enter (void *this_fn,
-                                         void *call_site)
+#define TELNET_PORT 12345
+int listenOnTelnet = 1;
+int listenSock;		
+static void handle_events(int fd, int *wd,int htmlFd, char* path)
 {
-	printf("Enter\n");
-
-}
-
-void  __attribute__ ((no_instrument_function))  __cyg_profile_func_exit (void *this_fn,
-                                         void *call_site)
-{
-
-	printf("Exit\n");
-
-}
-
-
-       /* Read all available inotify events from the file descriptor 'fd'.
-          wd is the table of watch descriptors for the directories in argv.
-          argc is the length of wd and argv.
-          argv is the list of watched directories.
-          Entry 0 of wd and argv is unused. */
-
-static void handle_events(int fd, int *wd, int argc, char *argv[],int html)
-{
-	/* Some systems cannot read integer variables if they are not
-	   properly aligned. On other systems, incorrect alignment may
-	   decrease performance. Hence, the buffer used for reading from
-	   the inotify file descriptor should have the same alignment as
-	   struct inotify_event. */
-
-	char buf[4096]
-	    __attribute__ ((aligned(__alignof__(struct inotify_event))));
+char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
 	const struct inotify_event *event;
-	int i;
 	ssize_t len;
 	char *ptr;
-		
+    	char timeBuffer[32];
+    	char operationBuffer[16];
+    	char nameBuffer[1024];
+
+
 	/* Loop while events can be read from inotify file descriptor. */
 
 	for (;;) {
@@ -80,107 +52,167 @@ static void handle_events(int fd, int *wd, int argc, char *argv[],int html)
 			exit(EXIT_FAILURE);
 		}
 
-		/* If the nonblocking read() found no events to read, then
-		   it returns -1 with errno set to EAGAIN. In that case,
-		   we exit the loop. */
-
 		if (len <= 0)
 			break;
 
 		/* Loop over all events in the buffer */
 
-		for (ptr = buf; ptr < buf + len;
-		     ptr += sizeof(struct inotify_event) + event->len) {
+		for (ptr = buf; ptr < buf + len; ptr += sizeof(struct inotify_event) + event->len) 
+		{
+			memset(nameBuffer, 0, 1024);
+    			memset(operationBuffer, 0, 16);
+			time_t timer;
+    			struct tm* tm_info;
 
 			event = (const struct inotify_event *) ptr;
 
+			if (!(event->mask & IN_OPEN))
+			{
+			/* Print event time */
+
+			memset(timeBuffer, 0, sizeof (timeBuffer));
+			timer = time(NULL);
+			tm_info = localtime(&timer);
+ 	               strftime(timeBuffer, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+			write(htmlFd, timeBuffer, strlen(timeBuffer));
+			write(htmlFd, ": ", strlen(": "));
+			
 			/* Print event type */
-
-			char operationBuffer[100];
-			if (event->mask & IN_OPEN){
-			printf("IN_OPEN: ");
-			strcpy(operationBuffer, "Sharon seccses ");
-			write(html, operationBuffer, strlen(operationBuffer));
-			}
-				
+			
+			//	write(htmlFd, "FILE ACCESSED: ", strlen("FILE ACCESSED: "));
 			if (event->mask & IN_CLOSE_NOWRITE)
-				printf("IN_CLOSE_NOWRITE: ");
+				strcpy(operationBuffer, "READ");
 			if (event->mask & IN_CLOSE_WRITE)
-				printf("IN_CLOSE_WRITE: ");
+				strcpy(operationBuffer, "WRITE ");
 
+			write(htmlFd, operationBuffer, strlen(operationBuffer));
 			/* Print the name of the watched directory */
-
-			for (i = 1; i < argc; ++i) {
-				if (wd[i] == event->wd) {
-					printf("%s/", argv[i]);
-					break;
-				}
+	
+			if (*wd == event->wd) {
+				strcat(nameBuffer, path);
 			}
+			
 
 			/* Print the name of the file */
 
 			if (event->len)
-				printf("%s", event->name);
+			{
+				write(htmlFd, event->name, strlen(event->name));
+				strcat(nameBuffer, event->name);
+			}
 
 			/* Print type of filesystem object */
 
-			if (event->mask & IN_ISDIR)
-				printf(" [directory]\n");
+			if(event->mask & IN_ISDIR)
+				write(htmlFd, " [directory]<br>", strlen(" [directory]<br>"));
 			else
-				printf(" [file]\n");
+				write(htmlFd, " [file]<br>", strlen(" [file]<br>"));
+				
+				
+			
+			}
+	
 		}
+
 	}
+				
 }
 
-int main(int argc, char *argv[])
-{
-	char buf;
-	int fd, i, poll_num;
-	int *wd;
-	nfds_t nfds;
-	int htmlFd;
-	struct pollfd fds[2];
-	htmlFd = open("/var/www/html/index.html", O_WRONLY | O_TRUNC);
-	if(htmlFd == -1)
-		perror("open");
-	write(htmlFd, "<html><head>  <meta http-equiv= 'refresh' content= '5'></head><body>", strlen("<html><head>  <meta http-equiv= 'refresh' content= '5'></head><body>"));	
-
-	if (argc < 2) {
-		printf("Usage: %s PATH [PATH ...]\n", argv[0]);
-		exit(EXIT_FAILURE);
-	}
-
-	printf("Press ENTER key to terminate.\n");
-
-	/* Create the file descriptor for accessing the inotify API */
-
-	fd = inotify_init1(IN_NONBLOCK);
-	if (fd == -1) {
+void createDescriptor(int *fd, int *wdes ,char* path){
+*fd = inotify_init1(IN_NONBLOCK);
+	if (*fd == -1) {
 		perror("inotify_init1");
 		exit(EXIT_FAILURE);
 	}
 
-	/* Allocate memory for watch descriptors */
-
-	wd = calloc(argc, sizeof(int));
-	if (wd == NULL) {
-		perror("calloc");
-		exit(EXIT_FAILURE);
-	}
 
 	/* Mark directories for events
 	   - file was opened
 	   - file was closed */
 
-	for (i = 1; i < argc; i++) {
-		wd[i] = inotify_add_watch(fd, argv[i], IN_OPEN | IN_CLOSE);
-		if (wd[i] == -1) {
-			fprintf(stderr, "Cannot watch '%s'\n", argv[i]);
-			perror("inotify_add_watch");
-			exit(EXIT_FAILURE);
-		}
+	*wdes = inotify_add_watch(*fd, path, IN_OPEN | IN_CLOSE);
+	if (*wdes == -1) {
+		fprintf(stderr, "Cannot watch '%s'\n", path);
+		perror("inotify_add_watch");
+		exit(EXIT_FAILURE);
 	}
 
+
+}
+
+void checkValidArgc(char *path ,char *ip){
+ 	
+ 	struct sockaddr_in s = {0};
+	s.sin_family = AF_INET;
+	s.sin_port = htons(PORT);
+	
+	if(inet_pton(AF_INET, ip, &s.sin_addr.s_addr)<=0)  
+   	{ 
+        	perror("\nInvalid address/ Address not supported"); 
+        	exit(1); 
+   	} 
+	DIR* dir = opendir(path);
+	if (dir) {
+    		/* Directory exists. */
+    		printf("%s","Directory exists.\n");
+    		closedir(dir);
+	} 	else if (ENOENT == errno) {
+    			printf("%s","Directory does not exist");
+    			/* Directory does not exist. */
+	} 	else {
+    		printf("%s","* opendir() failed for some other reason.");
+    		/* opendir() failed for some other reason. */	
+}	
+
+
+
+}
+
+int main(int argc, char *argv[]){
+   	int htmlFd;
+	char buf;
+	int fd, poll_num;
+	int wdes;
+	nfds_t nfds;
+	struct pollfd fds[2];
+   	int opt;	
+   	char ip[21];				
+	char path[50];
+    if (argc != 5){
+    	
+    	perror("\n system expected get IP and path. The system close in 3 second"); 
+    	sleep(3);
+    	exit(-1);
+    }
+        
+
+    while ((opt = getopt(argc, argv, "i:d:")) != -1)
+       {
+               
+               switch (opt) 
+		{
+ 			case 'i':
+ 			{
+				strcpy(ip, optarg);
+				printf("%s",ip);
+				break;
+			}	
+ 			case 'd':
+ 			{
+				strcpy(path, optarg);
+				break;
+			}	
+			default:
+				printf("Bad arguments was caught\n");
+				break;
+ 		}
+ 	}
+
+	checkValidArgc(path,ip);
+	htmlFd = open("/var/www/html/index.html", O_WRONLY | O_TRUNC);
+	if(htmlFd == -1)
+		perror("open");
+	createDescriptor(&fd,&wdes,path);
 	/* Prepare for polling */
 
 	nfds = 2;
@@ -197,8 +229,13 @@ int main(int argc, char *argv[])
 
 	/* Wait for events and/or terminal input */
 
+	write(htmlFd, "<html><head>  <meta http-equiv= 'refresh' content= '5'></head><body>", strlen("<html><head>  <meta http-equiv= 'refresh' content= '5'></head><body>"));
+
+
 	printf("Listening for events.\n");
+	
 	while (1) {
+        	
 		poll_num = poll(fds, nfds, -1);
 		if (poll_num == -1) {
 			if (errno == EINTR)
@@ -213,8 +250,7 @@ int main(int argc, char *argv[])
 
 				/* Console input is available. Empty stdin and quit */
 
-				while (read(STDIN_FILENO, &buf, 1) > 0
-				       && buf != '\n')
+				while (read(STDIN_FILENO, &buf, 1) > 0 && buf != '\n')
 					continue;
 				break;
 			}
@@ -223,18 +259,31 @@ int main(int argc, char *argv[])
 
 				/* Inotify events are available */
 
-				handle_events(fd, wd, argc, argv,htmlFd);
+				handle_events(fd, &wdes, htmlFd,path);
 			}
 		}
 	}
 
 	printf("Listening for events stopped.\n");
 
+	listenOnTelnet = 0;
+	close(listenSock);
+	write(htmlFd, "</body></html>", strlen("</body></html>"));
+	
 	/* Close inotify file descriptor */
-
+	close(htmlFd);
 	close(fd);
-write(htmlFd, "</body></html>", strlen("</body></html>"));
-	free(wd);
 	exit(EXIT_SUCCESS);
+
+	
+
 }
 
+    © 2021 GitHub, Inc.
+    Terms
+    Privacy
+    Security
+    Status
+    Docs
+
+    Contact
